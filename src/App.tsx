@@ -27,7 +27,7 @@ const barColors = [
   'from-slate-500 to-slate-600'
 ];
 
-// --- ХУКИ РЕАЛЬНОГО ВРЕМЕНИ (С ФУНКЦИЕЙ ЖЕСТКОГО ПУЛЛИНГА) ---
+// --- ХУКИ РЕАЛЬНОГО ВРЕМЕНИ ---
 const useTableSync = (tableName, filterCol, filterVal) => {
   const [data, setData] = useState([]);
   
@@ -48,7 +48,7 @@ const useTableSync = (tableName, filterCol, filterVal) => {
         fetchData(); 
       }).subscribe();
 
-    const interval = setInterval(fetchData, 2500);
+    const interval = setInterval(fetchData, 15000);
 
     return () => { 
       supabase.removeChannel(channel); 
@@ -74,10 +74,10 @@ const useDocSync = (tableName, id) => {
 
     const channel = supabase.channel(`public:${tableName}:${id}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: tableName, filter: `id=eq.${id}` }, payload => {
-        setDoc(payload.new);
+        setDoc(payload.new); 
       }).subscribe();
 
-    const interval = setInterval(fetchDoc, 2000);
+    const interval = setInterval(fetchDoc, 15000);
 
     return () => { 
       supabase.removeChannel(channel); 
@@ -103,7 +103,6 @@ const particlesConfig = Array.from({ length: 30 }).map((_, i) => {
 });
 
 const Background = React.memo(() => (
-  // Изменили z-[-1] на z-0, чтобы фон не прятался под цветом body
   <div className="fixed inset-0 z-0 bg-slate-950 overflow-hidden pointer-events-none">
     <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] rounded-full bg-indigo-900/30 blur-[120px] mix-blend-screen" />
     <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-violet-900/30 blur-[120px] mix-blend-screen" />
@@ -320,7 +319,7 @@ const CreateTest = ({ user, navigate }) => {
   const [questions, setQuestions] = useState([{ text: '', options: ['', '', '', ''], correctIndex: 0 }]);
   const [questionsPerPlayer, setQuestionsPerPlayer] = useState(1);
   const [timeLimit, setTimeLimit] = useState(15);
-  const [pointsPerQuestion, setPointsPerQuestion] = useState(1000);
+  const [pointsPerQuestion, setPointsPerQuestion] = useState(10); // Изменили дефолт на 10
   const [saving, setSaving] = useState(false);
 
   const addQuestion = () => {
@@ -345,7 +344,7 @@ const CreateTest = ({ user, navigate }) => {
         questions,
         questionsPerPlayer: Math.min(questionsPerPlayer, questions.length),
         timeLimit: parseInt(timeLimit) || 15,
-        pointsPerQuestion: parseInt(pointsPerQuestion) || 1000,
+        pointsPerQuestion: parseInt(pointsPerQuestion) || 10,
         createdAt: Date.now()
       }]);
       navigate('dashboard');
@@ -371,8 +370,8 @@ const CreateTest = ({ user, navigate }) => {
           <Input type="number" min="5" max="120" value={timeLimit} onChange={e => setTimeLimit(e.target.value)} />
         </Card>
         <Card>
-          <label className="block text-sm font-medium text-gray-400 mb-2">Максимально баллов за вопрос</label>
-          <Input type="number" min="10" max="10000" value={pointsPerQuestion} onChange={e => setPointsPerQuestion(e.target.value)} />
+          <label className="block text-sm font-medium text-gray-400 mb-2">Точное количество баллов за вопрос</label>
+          <Input type="number" min="1" max="10000" value={pointsPerQuestion} onChange={e => setPointsPerQuestion(e.target.value)} />
         </Card>
       </div>
 
@@ -622,6 +621,8 @@ const PlayGame = ({ sessionId, playerId, testId }) => {
   
   const [shuffledQuestions, setShuffledQuestions] = useState([]);
   const [selectedOption, setSelectedOption] = useState(null);
+  
+  // ИСПРАВЛЕНИЕ #1: Локальный таймер для телефона (независимый от часов компьютера)
   const [localTimeLeft, setLocalTimeLeft] = useState(0);
 
   useEffect(() => {
@@ -632,15 +633,20 @@ const PlayGame = ({ sessionId, playerId, testId }) => {
     }
   }, [test, shuffledQuestions.length]);
 
+  // Запуск локального визуального таймера при смене состояния раунда
   useEffect(() => {
     if (session?.status === 'active') {
-      const targetTime = session.roundState === 'answering' ? session.roundEndTime : session.showingEndTime;
-      const updateTimer = () => setLocalTimeLeft(Math.max(0, Math.ceil((targetTime - Date.now()) / 1000)));
-      updateTimer();
-      const timer = setInterval(updateTimer, 1000);
-      return () => clearInterval(timer);
+      if (session.roundState === 'answering') {
+        setLocalTimeLeft(test?.timeLimit || 15);
+        const timer = setInterval(() => {
+          setLocalTimeLeft(prev => (prev > 0 ? prev - 1 : 0));
+        }, 1000);
+        return () => clearInterval(timer);
+      } else if (session.roundState === 'showing') {
+        setLocalTimeLeft(0);
+      }
     }
-  }, [session?.roundEndTime, session?.showingEndTime, session?.roundState, session?.status]);
+  }, [session?.roundState, session?.currentRound, test?.timeLimit, session?.status]);
 
   useEffect(() => { setSelectedOption(null); }, [session?.currentRound]);
 
@@ -685,12 +691,9 @@ const PlayGame = ({ sessionId, playerId, testId }) => {
     
     try {
       const isCorrect = optIndex === currentQ.correctIndex;
-      let pointsEarned = 0;
-      if (isCorrect) {
-        const maxPoints = test.pointsPerQuestion || 1000;
-        const timeLim = test.timeLimit || 15;
-        pointsEarned = Math.round((localTimeLeft / timeLim) * (maxPoints / 2) + (maxPoints / 2));
-      }
+      
+      // ИСПРАВЛЕНИЕ #2: Фиксированные баллы за ответ без штрафа за время
+      const pointsEarned = isCorrect ? (test.pointsPerQuestion || 10) : 0;
 
       const { error } = await supabase.from('players').update({ 
         score: (player.score || 0) + pointsEarned, answeredRound: session.currentRound 
